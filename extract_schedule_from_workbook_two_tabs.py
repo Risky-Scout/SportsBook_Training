@@ -42,18 +42,29 @@ def parse_args():
 
 
 def normalize_date(v) -> str:
-    if pd.isna(v):
+    if v is None or v == "":
         return ""
+    s = str(v).strip()
+    if not s:
+        return ""
+
+    # Odds API commence values are UTC. Convert to ET so night games stay on the right slate date.
     try:
-        ts = pd.to_datetime(v, utc=True)
-        return ts.date().isoformat()
+        ts = pd.to_datetime(s, utc=True, errors="raise")
+        if pd.isna(ts):
+            return ""
+        return ts.tz_convert("America/New_York").strftime("%Y-%m-%d")
     except Exception:
-        try:
-            ts = pd.to_datetime(v)
-            return ts.date().isoformat()
-        except Exception:
-            s = str(v).strip()
-            return s[:10] if len(s) >= 10 else ""
+        pass
+
+    # Fallback for plain date / Excel-ish values
+    try:
+        ts = pd.to_datetime(s, errors="raise")
+        if pd.isna(ts):
+            return ""
+        return ts.strftime("%Y-%m-%d")
+    except Exception:
+        return s[:10]
 
 
 def parse_event_name(event: str) -> Tuple[Optional[str], Optional[str], str]:
