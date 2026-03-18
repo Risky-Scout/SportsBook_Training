@@ -1,0 +1,12 @@
+{
+  "site_adj_ortg": 1.75,
+  "rot_delta_coeff_ortg": 8.0,
+  "tempo_harmonic_weight": 0.85,
+  "tempo_league_weight": 0.15,
+  "home_nb_dispersion": 0.028,
+  "away_nb_dispersion": 0.028,
+  "shared_tempo_sigma": 0.065,
+  "shared_tempo_states": 7,
+  "max_points_buffer": 35,
+  "max_points_cap": 130
+}

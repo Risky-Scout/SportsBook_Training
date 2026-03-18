@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  echo 'Usage: ./run_daily_marketmaker_v3_exact.sh YYYY-MM-DD'
+  exit 1
+fi
+
+SLATE_DATE="$1"
+
+if [[ "$SLATE_DATE" == "YYYY-MM-DD" || "$SLATE_DATE" == *"YYYY"* || "$SLATE_DATE" == *"MM"* || "$SLATE_DATE" == *"DD"* ]]; then
+  echo "ERROR: replace YYYY-MM-DD with a real date, e.g. 2026-03-17"
+  exit 1
+fi
+
+if [[ ! "$SLATE_DATE" =~ ^20[0-9]{2}-[0-9]{2}-[0-9]{2}$ ]]; then
+  echo "ERROR: date must be in YYYY-MM-DD format, e.g. 2026-03-17"
+  exit 1
+fi
+
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$PROJECT_DIR"
+
+OUT="./outputs_exact_workbook/ncaab_pmf_model_DAILY_${SLATE_DATE}_MARKET_MAKER_PRO_V2_EXACT.xlsx"
+
+echo "=== PHASE 3.2 EXACT GENERATOR START ==="
+echo "DATE=${SLATE_DATE}"
+
+echo "--- Step 1/5: Build exact PMF outputs ---"
+bash ./run_joint_pmf_exact_v2.sh "$SLATE_DATE"
+
+echo "--- Step 2/5: Validate exact PMF outputs ---"
+python3 ./validate_joint_pmf_v2.py --out_dir ./outputs --cutoff "$SLATE_DATE"
+
+echo "--- Step 3/5: Build exact workbook ---"
+bash ./run_daily_marketmaker_v2_exact.sh "$SLATE_DATE"
+
+echo "--- Step 4/5: Finalize exact workbook semantics/math ---"
+python3 ./repair_exact_workbook_math_v2.py --workbook "$OUT"
+python3 ./patch_dashboard_selected_block_v2.py --workbook "$OUT"
+python3 ./patch_sign_semantics_v2.py --workbook "$OUT"
+python3 ./patch_dashboard_snapshot_semantics_v2.py --workbook "$OUT"
+python3 ./patch_dashboard_snapshot_semantics_v2.py --workbook "$OUT"
+
+echo "--- Step 5/5: Exact-mode QA ---"
+python3 ./qa_marketmaker_exact_v3.py --workbook "$OUT"
+
+echo "READY: $OUT"
