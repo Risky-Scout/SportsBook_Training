@@ -472,6 +472,36 @@ def main():
     df["data_quality"] = df.apply(quality, axis=1)
 
     # ── Opponent-adjusted efficiency ──────────────────────────────────────────
+    # ── Defensive four-factor columns (opponent's offensive FF) ──────
+    ff_cols = ["GAME-ID","KP_NAME","blend_g_eFG","blend_g_TOV","blend_g_ORB","blend_g_FTR"]
+    hff = df[df["VENUE"]=="Home"][ff_cols].copy()
+    aff = df[df["VENUE"]=="Road"][ff_cols].copy()
+    hff.columns = ["GAME-ID","h_kp","h_eFG","h_TOV","h_ORB","h_FTR"]
+    aff.columns = ["GAME-ID","a_kp","a_eFG","a_TOV","a_ORB","a_FTR"]
+    def_pairs = hff.merge(aff, on="GAME-ID", how="inner")
+    # Home team defensive FF = away team's offensive FF in that game
+    # Away team defensive FF = home team's offensive FF in that game
+    def_map_h = def_pairs.set_index("GAME-ID")[["a_eFG","a_TOV","a_ORB","a_FTR"]]
+    def_map_a = def_pairs.set_index("GAME-ID")[["h_eFG","h_TOV","h_ORB","h_FTR"]]
+    df["def_eFG_allowed"] = np.nan
+    df["def_TOV_forced"]  = np.nan
+    df["def_DRB_rate"]    = np.nan
+    df["def_FTR_allowed"] = np.nan
+    h_mask = df["VENUE"]=="Home"; a_mask = df["VENUE"]=="Road"
+    h_ids  = df.loc[h_mask,"GAME-ID"]
+    a_ids  = df.loc[a_mask,"GAME-ID"]
+    df.loc[h_mask,"def_eFG_allowed"] = h_ids.map(def_map_h["a_eFG"]).values
+    df.loc[h_mask,"def_TOV_forced"]  = h_ids.map(def_map_h["a_TOV"]).values
+    df.loc[h_mask,"def_DRB_rate"]    = 1 - h_ids.map(def_map_h["a_ORB"]).values
+    df.loc[h_mask,"def_FTR_allowed"] = h_ids.map(def_map_h["a_FTR"]).values
+    df.loc[a_mask,"def_eFG_allowed"] = a_ids.map(def_map_a["h_eFG"]).values
+    df.loc[a_mask,"def_TOV_forced"]  = a_ids.map(def_map_a["h_TOV"]).values
+    df.loc[a_mask,"def_DRB_rate"]    = 1 - a_ids.map(def_map_a["h_ORB"]).values
+    df.loc[a_mask,"def_FTR_allowed"] = a_ids.map(def_map_a["h_FTR"]).values
+    # Fill neutral/missing with column mean
+    for col in ["def_eFG_allowed","def_TOV_forced","def_DRB_rate","def_FTR_allowed"]:
+        df[col] = df[col].fillna(df[col].mean())
+
     home = df[df["VENUE"] == "Home"][["GAME-ID","KP_NAME","blend_OEFF","blend_DEFF"]].copy()
     away = df[df["VENUE"] == "Road"][["GAME-ID","KP_NAME","blend_OEFF","blend_DEFF"]].copy()
     home.columns = ["GAME-ID","h","h_oe","h_de"]
@@ -509,6 +539,7 @@ def main():
         "blend_OEFF","blend_DEFF","blend_POSS",
         "blend_g_eFG","blend_g_TOV","blend_g_ORB","blend_g_FTR",
         "adj_OEFF","adj_DEFF",
+        "def_eFG_allowed","def_TOV_forced","def_DRB_rate","def_FTR_allowed",
     ] if c in df.columns]
 
     out = df[keep].rename(columns={
