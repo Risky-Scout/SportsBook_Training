@@ -249,6 +249,73 @@ def load_slate(path, date_str):
         raise ValueError(f"No games found for date {date_str}. Dates in file: {unique_dates}")
     return df.copy()
 
+
+_FF_LAMBDA=0.25; _FF_CLIP=1.25; _FF_K=8.0
+
+def _load_ff_core(kp_ff_path, bas_path):
+    import pandas as _pd, numpy as _np
+    kp = _pd.read_csv(kp_ff_path).set_index("TeamName")
+    bas = _pd.read_csv(bas_path, parse_dates=["DATE"])
+    bas_t = bas.sort_values("DATE").groupby("KP_NAME").last()
+    lg = {}
+    for k,c in [("eFG","eFG_Pct"),("TOV","TO_Pct"),("ORB","OR_Pct"),("FTR","FT_Rate"),
+                ("DeFG","DeFG_Pct"),("DTO","DTO_Pct"),("DOR","DOR_Pct"),("DFT","DFT_Rate")]:
+        lg[k+"_mu"]=float(kp[c].mean()); lg[k+"_sd"]=float(kp[c].std()+1e-9)
+    for k,c in [("eFG","blend_g_eFG"),("TOV","blend_g_TOV"),("ORB","blend_g_ORB"),("FTR","blend_g_FTR")]:
+        if c in bas_t.columns:
+            v=bas_t[c].dropna()
+            vals=v*100 if v.mean()<2 else v
+            lg["b"+k+"_sd"]=float(vals.std()+1e-9)
+        else: lg["b"+k+"_sd"]=3.0
+    teams={}
+    for team in kp.index:
+        if team not in bas_t.index: continue
+        b=bas_t.loc[team]; gp=float(b.get("games_played",_FF_K))
+        w=_FF_K/(_FF_K+gp)
+        def bv(c,fb):
+            val=float(b[c]) if c in b.index else fb
+            return val*100 if val<2.0 else val
+        off={"eFG":w*float(kp.loc[team,"eFG_Pct"])+(1-w)*bv("blend_g_eFG",50),
+             "TOV":w*float(kp.loc[team,"TO_Pct"]) +(1-w)*bv("blend_g_TOV",17),
+             "ORB":w*float(kp.loc[team,"OR_Pct"]) +(1-w)*bv("blend_g_ORB",30),
+             "FTR":w*float(kp.loc[team,"FT_Rate"])+(1-w)*bv("blend_g_FTR",35)}
+        dff={"DeFG":float(kp.loc[team,"DeFG_Pct"]),"DTO":float(kp.loc[team,"DTO_Pct"]),
+             "DOR":float(kp.loc[team,"DOR_Pct"]), "DFT":float(kp.loc[team,"DFT_Rate"])}
+        mom={}
+        for k,bc,l5,l10 in [("eFG","blend_g_eFG","L5_g_eFG","L10_g_eFG"),
+                              ("TOV","blend_g_TOV","L5_g_TOV","L10_g_TOV"),
+                              ("ORB","blend_g_ORB","L5_g_ORB","L10_g_ORB"),
+                              ("FTR","blend_g_FTR","L5_g_FTR","L10_g_FTR")]:
+            if bc in b.index and l5 in b.index and l10 in b.index:
+                bval=bv(bc,50); l5v=bv(l5,bval); l10v=bv(l10,bval)
+                sd=lg["b"+k+"_sd"]
+                mom[k]=float(_np.clip(0.7*(l5v-bval)/sd+0.3*(l10v-bval)/sd,-1,1))
+            else: mom[k]=0.0
+        teams[team]={"off":off,"def":dff,"mom":mom}
+    return teams, lg
+
+def _ff_delta(ht, at, lg):
+    def zo(v,k): return (v-lg[k+"_mu"])/lg[k+"_sd"]
+    OhE= zo(ht["off"]["eFG"],"eFG"); OhT=-zo(ht["off"]["TOV"],"TOV")
+    OhO= zo(ht["off"]["ORB"],"ORB"); OhF= zo(ht["off"]["FTR"],"FTR")
+    OaE= zo(at["off"]["eFG"],"eFG"); OaT=-zo(at["off"]["TOV"],"TOV")
+    OaO= zo(at["off"]["ORB"],"ORB"); OaF= zo(at["off"]["FTR"],"FTR")
+    WhE= zo(at["def"]["DeFG"],"DeFG"); WhT=-zo(at["def"]["DTO"],"DTO")
+    WhO=-zo(at["def"]["DOR"],"DOR");  WhF= zo(at["def"]["DFT"],"DFT")
+    WaE= zo(ht["def"]["DeFG"],"DeFG"); WaT=-zo(ht["def"]["DTO"],"DTO")
+    WaO=-zo(ht["def"]["DOR"],"DOR");  WaF= zo(ht["def"]["DFT"],"DFT")
+    Xh=[OhE+WhE,OhT+WhT,OhO+WhO,OhF+WhF]
+    Xa=[OaE+WaE,OaT+WaT,OaO+WaO,OaF+WaF]
+    mh=ht["mom"]; ma=at["mom"]
+    rh=1.00*Xh[0]+0.60*Xh[1]+0.35*Xh[2]+0.20*Xh[3]+0.15*mh["eFG"]-0.10*mh["TOV"]+0.05*mh["ORB"]+0.05*mh["FTR"]
+    ra=1.00*Xa[0]+0.60*Xa[1]+0.35*Xa[2]+0.20*Xa[3]+0.15*ma["eFG"]-0.10*ma["TOV"]+0.05*ma["ORB"]+0.05*ma["FTR"]
+    x_all=[abs(x) for x in Xh+Xa]
+    guard=max(x_all)>6
+    import numpy as _np
+    dh=float(_np.clip(_FF_LAMBDA*rh,-_FF_CLIP,_FF_CLIP))
+    da=float(_np.clip(_FF_LAMBDA*ra,-_FF_CLIP,_FF_CLIP))
+    return dh,da,guard
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--slate",     default="cbb_cache/GameInputs.csv")
@@ -283,6 +350,8 @@ def main():
             v=ts.loc[t,col]; return float(v) if pd.notna(v) else fb
         return fb
 
+    _ff_teams,_ff_lg=_load_ff_core(args.kenpom_ff,args.baselines)
+    log.info(f"FF core teams loaded: {len(_ff_teams)}")
     rows=[]; kp_both=0; kp_miss=[]
     for _,game in slate.iterrows():
         h=str(game["HOME_KP"]); a=str(game["AWAY_KP"])
@@ -317,8 +386,16 @@ def main():
 
         sa=sa_fit if site=="H" else 0.0
         harm=2/(1/max(tp_h,50)+1/max(tp_a,50)); mp=0.85*harm+0.15*kp_lg_tp
-        h_ortg=blg+WO*(oe_h-blg)+WD*(de_a-blg)+sa
-        a_ortg=blg+WO*(oe_a-blg)+WD*(de_h-blg)-sa
+        h_ortg_base=blg+WO*(oe_h-blg)+WD*(de_a-blg)+sa
+        a_ortg_base=blg+WO*(oe_a-blg)+WD*(de_h-blg)-sa
+        _hkp=R(h); _akp=R(a)
+        if _hkp in _ff_teams and _akp in _ff_teams:
+            _dh,_da,_gf=_ff_delta(_ff_teams[_hkp],_ff_teams[_akp],_ff_lg)
+            _ff_app=not _gf
+        else: _dh=0.0; _da=0.0; _ff_app=False
+        h_ortg=h_ortg_base+(_dh if _ff_app else 0.0)
+        a_ortg=a_ortg_base+(_da if _ff_app else 0.0)
+        h_ortg_core=h_ortg; a_ortg_core=a_ortg
 
         sp_r=float(game.get("mkt_spread",float("nan")) or float("nan"))
         tt_r=float(game.get("mkt_total", float("nan")) or float("nan"))
@@ -342,9 +419,9 @@ def main():
             "oe_h":round(oe_h,3),"de_h":round(de_h,3),"tp_h":round(tp_h,3),
             "oe_a":round(oe_a,3),"de_a":round(de_a,3),"tp_a":round(tp_a,3),
             "blend_lg":round(blg,3),"sa_used":round(sa,3),"mu_pace":round(mp,3),
-            "h_ortg":round(h_ortg,3),"a_ortg":round(a_ortg,3),
+            "h_ortg_base":round(h_ortg_base,3),"a_ortg_base":round(a_ortg_base,3),"delta_h_ff":round(_dh,4),"delta_a_ff":round(_da,4),"h_ortg_core":round(h_ortg_core,3),"a_ortg_core":round(a_ortg_core,3),"ff_layer_applied":_ff_app,"ff_layer_status":"direct_core_present_day_only" if _ff_app else "base_only","h_ortg":round(h_ortg,3),"a_ortg":round(a_ortg,3),
             "mu_home":round(mp*h_ortg/100,3),"mu_away":round(mp*a_ortg/100,3),
-            "fair_spread":round(pmf["eh"]-pmf["ea"],3),"fair_total":round(pmf["eh"]+pmf["ea"],3),
+            "fair_spread":round(pmf["eh"]-pmf["ea"],3),"fair_total":round(pmf["eh"]+pmf["ea"],3),"FairSp_core":round(pmf["eh"]-pmf["ea"],3),"FairTt_core":round(pmf["eh"]+pmf["ea"],3),"P_ML_core":round(pmf["p_ml"],4),"P_Cov_core":(round(pmf["p_hc"],4) if not math.isnan(pmf["p_hc"]) else float("nan")),"P_Ov_core":(round(pmf["p_ov"],4) if not math.isnan(pmf["p_ov"]) else float("nan")),
             "fair_home_team_total":round(pmf["eh"],3),"fair_away_team_total":round(pmf["ea"],3),
             "p_ml_home_raw":round(pmf["p_ml"],4),
             "p_home_cover_raw":round(pmf["p_hc"],4) if not math.isnan(pmf["p_hc"]) else float("nan"),
