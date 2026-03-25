@@ -74,6 +74,10 @@ def main():
         out_ff = Path(args.outdir) / f"KenPom_FourFactors_{args.season}.csv"
         df_ff.to_csv(out_ff, index=False)
         log.info(f"  Four factors: {len(df_ff)} teams → {out_ff}")
+        # Also write date-stamped FF archive for historical validation
+        out_ff_arch = Path(args.outdir) / f"KenPom_FF_Archive_{args.date}.csv"
+        df_ff.to_csv(out_ff_arch, index=False)
+        log.info(f"  FF archive snapshot: {out_ff_arch}")
         ff_show = [c for c in ["TeamName","eFG_Pct","TO_Pct","OR_Pct","FT_Rate",
                                 "DeFG_Pct","DTO_Pct","DOR_Pct","DFT_Rate"] if c in df_ff.columns]
         log.info(f"  Sample:\n{df_ff[ff_show].head(3).to_string()}")
